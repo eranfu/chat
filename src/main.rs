@@ -25,36 +25,40 @@ enum Event {
     },
 }
 
+async fn await_and_log_error(fut: impl Future<Output=std::result::Result<(), impl Into<Box<dyn std::error::Error + Send + Sync>>>>) -> () {
+    if let Err(e) = fut.await {
+        eprintln!("{}", e.into());
+    }
+}
+
 async fn spawn_and_log_error(fut: impl Future<Output=Result<()>> + Send + 'static) -> JoinHandle<()> {
-    task::spawn(async {
-        if let Err(e) = fut.await {
-            eprintln!("{}", e);
-        }
-    })
+    task::spawn(async { await_and_log_error(fut).await; })
 }
 
 async fn broker_loop(mut events: UnboundedReceiver<Event>) {
-    let mut peers = HashMap::<String, UnboundedSender<String>>::new();
+    let mut peers = HashMap::new();
+    let mut writer_handles = Vec::new();
     while let Some(event) = events.next().await {
         match event {
             Event::NewPeer { name, stream } => {
                 println!("New user connected. name: {}", name);
                 let (sender, receiver) = mpsc::unbounded();
                 peers.insert(name, sender);
-                let _connection_writer_loop = spawn_and_log_error(connection_writer_loop(receiver, stream));
+                writer_handles.push(spawn_and_log_error(connection_writer_loop(receiver, stream)));
             }
             Event::Message { from, to, msg } => {
                 let msg = format!("from {}: {}", from, msg);
                 for to in to {
                     if let Some(sender) = peers.get_mut(&to) {
-                        match sender.send(msg.clone()).await {
-                            Ok(_) => {}
-                            Err(e) => { eprintln!("{}", e) }
-                        }
+                        await_and_log_error(sender.send(msg.clone())).await;
                     }
                 }
             }
         }
+    }
+    drop(peers);
+    for writer_handle in writer_handles {
+        writer_handle.await;
     }
 }
 
@@ -93,12 +97,14 @@ async fn accept_loop(addr: impl ToSocketAddrs) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     let mut incoming = listener.incoming();
     let (events_sender, events_receiver) = mpsc::unbounded();
-    let _broker_loop = task::spawn(broker_loop(events_receiver));
+    let broker_loop_handle = task::spawn(broker_loop(events_receiver));
     while let Some(stream) = incoming.next().await {
         let stream = stream?;
         println!("Accepting from: {}", stream.peer_addr()?);
         let _connection_loop = spawn_and_log_error(connection_loop(stream, events_sender.clone()));
     }
+    drop(events_sender);
+    broker_loop_handle.await;
     Ok(())
 }
 
