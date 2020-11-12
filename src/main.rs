@@ -33,7 +33,7 @@ async fn spawn_and_log_error(fut: impl Future<Output=Result<()>> + Send + 'stati
     })
 }
 
-async fn broker_loop(mut events: UnboundedReceiver<Event>) -> Result<()> {
+async fn broker_loop(mut events: UnboundedReceiver<Event>) {
     let mut peers = HashMap::<String, UnboundedSender<String>>::new();
     while let Some(event) = events.next().await {
         match event {
@@ -47,13 +47,15 @@ async fn broker_loop(mut events: UnboundedReceiver<Event>) -> Result<()> {
                 let msg = format!("from {}: {}", from, msg);
                 for to in to {
                     if let Some(sender) = peers.get_mut(&to) {
-                        sender.send(msg.clone()).await?
+                        match sender.send(msg.clone()).await {
+                            Ok(_) => {}
+                            Err(e) => { eprintln!("{}", e) }
+                        }
                     }
                 }
             }
         }
     }
-    Ok(())
 }
 
 async fn connection_loop(stream: TcpStream, mut events_sender: UnboundedSender<Event>) -> Result<()> {
@@ -64,7 +66,7 @@ async fn connection_loop(stream: TcpStream, mut events_sender: UnboundedSender<E
         None => { Err("peer disconnected immediately")? }
         Some(line) => { line? }
     };
-    events_sender.send(Event::NewPeer { name: name.clone(), stream: stream.clone() }).await?;
+    events_sender.send(Event::NewPeer { name: name.clone(), stream: stream.clone() }).await.unwrap();
 
     while let Some(line) = lines.next().await {
         let line = line?;
@@ -74,7 +76,7 @@ async fn connection_loop(stream: TcpStream, mut events_sender: UnboundedSender<E
         };
         let to: Vec<String> = dest.split(",").map(|dest| dest.trim().to_string()).collect();
         let msg = msg.to_string();
-        events_sender.send(Event::Message { from: name.clone(), to, msg }).await?;
+        events_sender.send(Event::Message { from: name.clone(), to, msg }).await.unwrap();
     }
     Ok(())
 }
