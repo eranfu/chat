@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_listen::{error_hint, ListenExt};
+use async_listen::backpressure::Token;
 use async_std::io::BufReader;
 use async_std::net::{Shutdown, TcpListener, ToSocketAddrs};
 use bimap::{BiHashMap, Overwritten};
@@ -59,10 +60,16 @@ async fn broker_loop(mut events: Receiver<Event>) {
                 }
             }
             Event::Message { from_id, to, msg } => {
-                let from = id_name_pairs.get_by_left(&from_id).unwrap();
-                let msg = format!("from {}: {}\n", from, msg);
-                for to_id in to.into_iter().filter_map(|to_name| id_name_pairs.get_by_right(&to_name)) {
-                    await_and_log_error(peers.get_mut(to_id).unwrap().send(msg.clone())).await
+                match id_name_pairs.get_by_left(&from_id) {
+                    None => {
+                        eprintln!("Attempt to send message to a user who was disconnected. id: {}", from_id)
+                    }
+                    Some(from) => {
+                        let msg = format!("from {}: {}\n", from, msg);
+                        for to_id in to.into_iter().filter_map(|to_name| id_name_pairs.get_by_right(&to_name)) {
+                            await_and_log_error(peers.get_mut(to_id).unwrap().send(msg.clone())).await
+                        }
+                    }
                 }
             }
         };
@@ -74,7 +81,7 @@ async fn broker_loop(mut events: Receiver<Event>) {
     }
 }
 
-async fn connection_loop(stream: TcpStream, mut events_sender: Sender<Event>) -> Result<()> {
+async fn connection_loop(_token: Token, stream: TcpStream, mut events_sender: Sender<Event>) -> Result<()> {
     let stream = Arc::new(stream);
     let reader = BufReader::new(&*stream);
     let mut lines = reader.lines();
@@ -123,12 +130,13 @@ async fn accept_loop(addr: impl ToSocketAddrs) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     let mut incoming = listener.incoming()
         .log_warnings(log_accept_warnings)
-        .handle_errors(Duration::from_millis(500));
+        .handle_errors(Duration::from_millis(500))
+        .backpressure(100);
     let (events_sender, events_receiver) = mpsc::unbounded();
     let broker_loop_handle = task::spawn(broker_loop(events_receiver));
-    while let Some(stream) = incoming.next().await {
+    while let Some((token, stream)) = incoming.next().await {
         println!("Accepting from: {}", stream.peer_addr()?);
-        let _connection_loop = spawn_and_log_error(connection_loop(stream, events_sender.clone()));
+        let _connection_loop = spawn_and_log_error(connection_loop(token, stream, events_sender.clone()));
     }
     drop(events_sender);
     broker_loop_handle.await;
@@ -136,6 +144,6 @@ async fn accept_loop(addr: impl ToSocketAddrs) -> Result<()> {
 }
 
 pub(crate) async fn run_server() -> Result<()> {
-    accept_loop("127.0.0.1:9527").await?;
+    accept_loop("0.0.0.0:9527").await?;
     Ok(())
 }
