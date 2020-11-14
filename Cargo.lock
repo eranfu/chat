@@ -59,6 +59,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-listen"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0eff11d7d3dbf808fb25952cc54a0bcf50b501ae6d6ea98a817009b330d0a2a"
+dependencies = [
+ "async-std",
+]
+
+[[package]]
 name = "async-mutex"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -166,6 +175,7 @@ checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 name = "chat"
 version = "0.1.0"
 dependencies = [
+ "async-listen",
  "async-std",
  "bimap",
  "futures",

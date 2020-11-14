@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::option::Option::Some;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
+use async_listen::{error_hint, ListenExt};
 use async_std::io::BufReader;
 use async_std::net::{Shutdown, TcpListener, ToSocketAddrs};
 use bimap::{BiHashMap, Overwritten};
@@ -113,13 +115,18 @@ async fn connection_writer_loop(mut message_receiver: Receiver<String>, stream: 
     Ok(())
 }
 
+fn log_accept_warnings(e: &futures::io::Error) {
+    eprintln!("Error: {}. Listener paused for 0.5s. {}", e, error_hint(e))
+}
+
 async fn accept_loop(addr: impl ToSocketAddrs) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
-    let mut incoming = listener.incoming();
+    let mut incoming = listener.incoming()
+        .log_warnings(log_accept_warnings)
+        .handle_errors(Duration::from_millis(500));
     let (events_sender, events_receiver) = mpsc::unbounded();
     let broker_loop_handle = task::spawn(broker_loop(events_receiver));
     while let Some(stream) = incoming.next().await {
-        let stream = stream?;
         println!("Accepting from: {}", stream.peer_addr()?);
         let _connection_loop = spawn_and_log_error(connection_loop(stream, events_sender.clone()));
     }
